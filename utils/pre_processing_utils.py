@@ -4,7 +4,11 @@
 import numpy as np
 from scipy.stats import norm
 from scipy.ndimage import gaussian_filter
-
+import os
+import numpy as np
+import cv2
+from czifile import CziFile
+from tqdm import tqdm
 
 def intensity_normalization(struct_img, scaling_param):
 
@@ -46,6 +50,46 @@ def intensity_normalization(struct_img, scaling_param):
 
     # print('intensity normalization completes')
     return struct_img
+
+
+def group_intensity_normalization_meanstd(struct_img, scaling_param, intensity_profile):
+
+    assert len(scaling_param) ==2
+
+    m = intensity_profile.mean
+    s = intensity_profile.std
+    
+    strech_min = m - scaling_param[0] * s
+    strech_max = m + scaling_param[1] * s
+    struct_img[struct_img > strech_max] = strech_max
+    struct_img[struct_img < strech_min] = strech_min
+    struct_img = (struct_img - strech_min + 1e-8)/(scaling_param[0] * s + scaling_param[0] * s + 1e-8)
+
+    # print('intensity normalization completes')
+    return struct_img
+
+def group_intensity_normalization_percentile(struct_img, intensity_profile, min_percentile, max_percentile):
+
+    strech_min = intensity_profile[f'percentile_{min_percentile}']
+    strech_max = intensity_profile[f'percentile_{max_percentile}']
+    struct_img[struct_img > strech_max] = strech_max
+    struct_img[struct_img < strech_min] = strech_min
+    struct_img = (struct_img - strech_min + 1e-8)/(strech_max - strech_min + 1e-8)
+
+    # print('intensity normalization completes')
+    return struct_img
+
+
+
+def intensity_normalization_known_percentile(struct_img, strech_min,strech_max):
+
+    struct_img[struct_img > strech_max] = strech_max
+    struct_img[struct_img < strech_min] = strech_min
+    struct_img = (struct_img - strech_min + 1e-8)/(strech_max - strech_min + 1e-8)
+
+    # print('intensity normalization completes')
+    return struct_img
+
 
 
 def image_smoothing_gaussian_3d(struct_img, sigma, truncate_range=3.0):
@@ -120,3 +164,84 @@ def suggest_normalization_param(structure_img0):
     print('To further enhance the contrast: You may increase the first value (may loss some dim parts), or decrease the second value' +
           '(may loss some texture in super bright regions)')
     print('To slightly reduce the contrast: You may decrease the first value, or increase the second value')
+
+
+
+def split_norm_process_all_2D_czi_folders(root_folder, output_dir, low_p=1, high_p=99):
+    """Wrapper function to process all subfolders containing .czi files."""
+    subfolder_names =  [ d for d in os.listdir(root_folder) if os.path.isdir(os.path.join(root_folder, d))]
+    
+    for subfolder_name in subfolder_names:
+        sub_czi_folder = os.path.join(root_folder, subfolder_name)
+        print(f"Processing folder: {sub_czi_folder}")
+        sub_output_dir = os.path.join(output_dir,subfolder_name)
+        os.makedirs(sub_output_dir, exist_ok=True)
+        split_norm_process_czi_folder(sub_czi_folder, sub_output_dir, low_p, high_p)
+    
+    print("All folders processed!")
+
+
+def split_norm_process_all_2D_czi_folders(root_folder, output_dir, low_p=1, high_p=99):
+    """Wrapper function to process all subfolders and nested subfolders containing .czi files."""
+    for root, dirs, files in os.walk(root_folder):
+        if any(file.endswith(".czi") for file in files):
+            relative_path = os.path.relpath(root, root_folder)
+            output_subdir = os.path.join(output_dir, relative_path)
+            print(f"Processing folder: {root} -> {output_subdir}")
+            split_norm_process_czi_folder(root, output_subdir, low_p, high_p)
+    
+    print("All folders processed!")
+
+
+
+def split_norm_process_czi_folder(czi_folder, output_dir, low_p=1, high_p=99):
+    """Process .czi files from a folder, normalize using specified percentiles, and save all channels."""
+    os.makedirs(output_dir, exist_ok=True)
+    all_channels_dir = os.path.join(output_dir, "all_channels")
+    os.makedirs(all_channels_dir, exist_ok=True)
+    
+    # Compute global percentiles
+    channel_values = {}
+    print(f"Gathering pixel values from {czi_folder}...")
+    for file_name in tqdm(os.listdir(czi_folder)):
+        if file_name.endswith(".czi"):
+            with CziFile(os.path.join(czi_folder, file_name)) as czi:
+                img_data = np.squeeze(czi.asarray())                
+                num_channels = img_data.shape[0]
+                for ch in range(0,num_channels):                    
+                    channel_img = img_data[ch, :, :].flatten()                    
+                    if ch not in channel_values:
+                        channel_values[ch] = channel_img
+                    else:
+                        channel_values[ch] = np.concatenate((channel_values[ch], channel_img))
+    
+    # Compute percentiles per channel
+    channel_stats = {}
+    for ch, values in channel_values.items():
+        channel_stats[ch] = {
+            'low': np.percentile(values, low_p),
+            'high': np.percentile(values, high_p)
+        }
+    print("Global percentile normalization values computed.")
+    
+    # Process and save normalized images
+    print(f"Processing files from {czi_folder}...")
+    for file_name in tqdm(os.listdir(czi_folder)):
+        if file_name.endswith(".czi"):
+            with CziFile(os.path.join(czi_folder, file_name)) as czi:
+                img_data = np.squeeze(czi.asarray()) 
+                base_name = os.path.splitext(os.path.basename(file_name))[0]
+                for ch in range(img_data.shape[0]):  # Process all channels
+                    channel_img = img_data[ch, :, :]
+                    # Normalize using computed percentiles
+                    low, high = channel_stats[ch]['low'], channel_stats[ch]['high']
+                    channel_img = np.clip((channel_img - low) / (high - low), 0, 1) * 255
+                    channel_img = channel_img.astype(np.uint8)
+
+                    # Save each channel in its own directory
+                    channel_dir = os.path.join(all_channels_dir, f"ch{ch}")
+                    os.makedirs(channel_dir, exist_ok=True)
+
+                    channel_path = os.path.join(channel_dir, f"{base_name}_ch{ch}.png")
+                    cv2.imwrite(channel_path, channel_img)
+            print(f"Saved all channels for {base_name}.")

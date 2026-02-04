@@ -16,14 +16,15 @@ class FA_obj_segmenter:
         major_fa_ch: int = 1,
         thres_cellmask: float = 97.7,
         thres_major_FA: float = 101,
-        close_size: int = 13,
+        close_size: int = 5,
         intensity_scaling_param: Tuple[int, int] = (10, 40),
         log_sigma: float = 1.0,
-        response_threshold: float = 0.012,
+        response_threshold: float = 0.01,
         major_FA_res_thresholds: List[float] = [0.5, 0.5, 0.5],
         sauvola_window_size: int = 201,
         sauvola_k: float = -1.0,
-        min_object_size: int = 4
+        min_object_size: int = 6,
+        intensity_profile = None,
     ):
         self.cellmask_ch = cellmask_ch
         self.major_fa_ch = major_fa_ch
@@ -37,6 +38,8 @@ class FA_obj_segmenter:
         self.sauvola_window_size = sauvola_window_size
         self.sauvola_k = sauvola_k
         self.min_object_size = min_object_size
+        self.intensity_profile = intensity_profile        
+        
 
     def cellmask_img_correction(self, cellmask_img: np.ndarray) -> np.ndarray:
         kernel_size = cellmask_img.shape[0]
@@ -94,13 +97,29 @@ class FA_obj_segmenter:
         cellmask_img = img[self.cellmask_ch, :, :]
         major_FA_img = img[self.major_fa_ch, :, :]
 
-        smooth_cellmask_img_corrected = self.cellmask_img_correction(cellmask_img)
+        # smooth_cellmask_img_corrected = self.cellmask_img_correction(cellmask_img)
       
-        target_cell_mask = self.target_cell_mask_seg(smooth_cellmask_img_corrected)
+        target_cell_mask = self.target_cell_mask_seg(cellmask_img)
+       
+        intensity_incell = major_FA_img[target_cell_mask>0]
+        vmin = np.percentile(intensity_incell,0.2)
+        vmax = np.percentile(intensity_incell,99.8)
+        norm_major_FA_img = (major_FA_img-vmin)/(vmax-vmin)
+        norm_major_FA_img[norm_major_FA_img<0]=0
+        norm_major_FA_img[norm_major_FA_img>1]=1
 
-        norm_major_FA_img = intensity_normalization(major_FA_img,self.intensity_scaling_param)
 
-        smooth_major_FA_img = gaussian_filter(norm_major_FA_img, sigma=1, mode="nearest", truncate=3)
+        # norm_major_FA_img = intensity_normalization(major_FA_img,self.intensity_scaling_param)
+
+        # vmin = self.intensity_profile[f'ch{self.major_fa_ch}_mean'] - self.intensity_scaling_param[0]*self.intensity_profile[f'ch{self.major_fa_ch}_std']
+        # vmax = self.intensity_profile[f'ch{self.major_fa_ch}_mean'] + self.intensity_scaling_param[1]*self.intensity_profile[f'ch{self.major_fa_ch}_std']
+        
+        # x_clipped = np.clip(major_FA_img, vmin, vmax)
+        # norm_major_FA_img = (x_clipped - vmin) / (vmax - vmin)
+
+
+        # smooth_major_FA_img = gaussian_filter(norm_major_FA_img, sigma=0.5, mode="nearest", truncate=3)
+        smooth_major_FA_img = norm_major_FA_img.copy() # gaussian_filter(norm_major_FA_img, sigma=0.5, mode="nearest", truncate=3)
 
         no_back_smooth_pax_img = smooth_major_FA_img.copy()
         no_back_smooth_pax_img[target_cell_mask == 0] = np.mean(smooth_major_FA_img[target_cell_mask == 1])
@@ -125,7 +144,8 @@ class FA_obj_segmenter:
         major_FA_seg_dot = response > self.response_threshold
         major_FA_seg_dot = remove_small_objects(major_FA_seg_dot > 0, min_size=self.min_object_size, connectivity=1)
 
-        major_FA_seg = (major_FA_seg_dot + major_FA_seg_1 + major_FA_seg_2 + major_FA_seg_3 + binary_sauvola) > 0
+        # major_FA_seg = (major_FA_seg_dot + major_FA_seg_1 + major_FA_seg_2 + major_FA_seg_3 + binary_sauvola) > 0
+        major_FA_seg = (major_FA_seg_dot + major_FA_seg_1 + major_FA_seg_2 +  binary_sauvola) > 0
         major_FA_seg = major_FA_seg * target_cell_mask
 
         return [major_FA_seg, target_cell_mask]  

@@ -10,13 +10,13 @@ from skimage.morphology import disk
 from scipy.ndimage import distance_transform_cdt
 from utils.pre_processing_utils import intensity_normalization
 
-def define_colormap_multipleobjects(cm_map_type: str = "tab10", number_limits: int = 4000) -> ListedColormap:
+def define_colormap_multipleobjects(cm_map_type: str = "tab10", number_limits: int = 200000) -> ListedColormap:
     """
     Generate a colormap that extends an existing colormap to accommodate a large number of segmented objects.
 
     Parameters:
     - cm_map_type (str, default "tab10"): Name of the colormap.
-    - number_limits (int, default 4000): Number of required colors.
+    - number_limits (int, default 200000): Number of required colors.
 
     Returns:
     - ListedColormap: A new colormap with `number_limits` colors.
@@ -41,12 +41,16 @@ def define_colormap_multipleobjects(cm_map_type: str = "tab10", number_limits: i
 def display_fa_segmentation_panels(
     input_image: np.ndarray,
     input_cell_mask: np.ndarray,
+    input_front_mask: np.ndarray,
     input_obj_seg: np.ndarray,
     local_orientation: np.ndarray,
     plot_output_dir: str,
     filename: str,
     flag_plot_save: int = 1,
-    flag_run_all: int = 1
+    flag_run_all: int = 1,
+    intensity_profile = None,
+    intensity_scaling_param = [2,10],
+    major_fa_ch = 1,
 ) -> np.ndarray:
     """
     Displays and saves focal adhesion segmentation panels.
@@ -76,16 +80,36 @@ def display_fa_segmentation_panels(
     regionprops_pax = regionprops(label_FA_obj, intensity_image=input_image)
     
     extended_colors = define_colormap_multipleobjects()
+  
+    # vmin = intensity_profile[f'ch{major_fa_ch}_mean'] - intensity_scaling_param[0]*intensity_profile[f'ch{major_fa_ch}_std']
+    # vmax = intensity_profile[f'ch{major_fa_ch}_mean'] + intensity_scaling_param[1]*intensity_profile[f'ch{major_fa_ch}_std']
+    
+    # x_clipped = np.clip(input_image, vmin, vmax)
+    # norm_input_image = (x_clipped - vmin) / (vmax - vmin)
+    
+    # fourtimes_norm_input_image: np.ndarray = norm_input_image * 1
+    # fourtimes_norm_input_image[fourtimes_norm_input_image > 1] = 1
 
-    norm_input_image: np.ndarray = intensity_normalization(input_image, [10, 40])
-    fourtimes_norm_input_image: np.ndarray = norm_input_image * 4
-    fourtimes_norm_input_image[fourtimes_norm_input_image > 1] = 1
 
+
+    intensity_incell = input_image[input_cell_mask>0]
+    vmin = np.percentile(intensity_incell,0.2)
+    vmax = np.percentile(intensity_incell,99.8)
+    fourtimes_norm_input_image = (input_image-vmin)/(vmax-vmin)
+    fourtimes_norm_input_image[fourtimes_norm_input_image<0]=0
+    fourtimes_norm_input_image[fourtimes_norm_input_image>1]=1
+
+
+    
+    label_FA_obj_forplot = label_FA_obj.copy()
+    
+    label_FA_obj_forplot[0,0]=200001
+    
     # Prepare the color map for label overlay
     pax_image_label_overlay: np.ndarray = label2rgb(
-        label_FA_obj, image=fourtimes_norm_input_image, kind='overlay', alpha=0.75, colors=extended_colors.colors
+        label_FA_obj_forplot, image=fourtimes_norm_input_image, kind='overlay', alpha=0.75, colors=extended_colors.colors
     )
-
+    
     for_orent_mask = binary_opening(input_cell_mask, disk(11))
     for_orent_distance_taxicab = distance_transform_cdt(for_orent_mask, metric="taxicab")
 
@@ -151,13 +175,17 @@ def display_fa_segmentation_panels(
     ax[1,0].imshow(input_cell_mask, cmap=plt.cm.gray,vmax=0.1,vmin=0)
     ax[1,0].axis('off')
     
-    ax[1,1].imshow(label_FA_obj, cmap=extended_colors, interpolation='none',vmax = 4001,vmin = 0)
-    ax[1,1].axis('off')
 
+    # extended_colors_fit = extended_colors
+    # extended_colors_fit.colors = extended_colors_fit.colors[:label_FA_obj.max()+1,:]
+    
+    ax[1,1].imshow(label_FA_obj*input_front_mask, cmap=extended_colors, interpolation='none',vmax = 200000 + 1,vmin = 0)
+    ax[1,1].axis('off')
+    
     ax[1,2].imshow(pax_image_label_overlay)
     ax[1,2].axis('off')
     
-    ax[1,3].imshow(input_image,cmap=plt.cm.gray,vmax=1,vmin=0)
+    ax[1,3].imshow(fourtimes_norm_input_image,cmap=plt.cm.gray,vmax=1,vmin=0)
     # quiver the orientation based on cell shape in blue
     ax[1,3].quiver(obj_Y,obj_X, -cell_U,cell_V,color='blue')
     # quiver the orientation of each object in magenta        
@@ -166,11 +194,11 @@ def display_fa_segmentation_panels(
 
     # Save plots
     if flag_plot_save:
-        plt.savefig(os.path.join(plot_output_dir, 'panel_plot', f'panels_{filename}_MIP_org_sm_ves_seg.png'))
+        plt.savefig(os.path.join(plot_output_dir, 'panel_plot', f'panels_{filename}.png'))
 
-        save_dirs = ['quiver_obj', 'contour', 'quiver_cell', 'label_color', 'rgb_plot']
-        for idx, save_dir in enumerate(save_dirs, start=1):
-            extent = ax[idx // 2, idx % 2].get_tightbbox(fig.canvas.renderer).transformed(fig.dpi_scale_trans.inverted())
+        save_dirs = ['rgb_plot', 'contour',  'label_color', 'quiver_cell','quiver_obj']
+        for idx, save_dir in enumerate(save_dirs, start=1):            
+            extent = ax[idx % 2, idx // 2 + 1].get_tightbbox(fig.canvas.renderer).transformed(fig.dpi_scale_trans.inverted())
             plt.savefig(os.path.join(plot_output_dir, save_dir, f'{save_dir}_{filename}.png'), bbox_inches=extent)
    
     if flag_run_all:
